@@ -1,0 +1,53 @@
+---
+description: Правила для Python, FastAPI, Telethon и SQLAlchemy в проекте TGSOS
+globs: ["**/*.py", "**/requirements.txt"]
+---
+
+# Python & FastAPI (TGSOS)
+
+Ты работаешь в проекте **TGSOS** — личный агрегатор каналов Telegram (Python, FastAPI, Telethon, SQLAlchemy).
+
+## Стек
+
+- **Backend**: Python 3.11+, FastAPI, Uvicorn
+- **БД**: SQLAlchemy 2.0, SQLite (aiosqlite), при росте — PostgreSQL
+- **Telegram**: Telethon (user client, не Bot API)
+- **Конфиг**: `.env` через python-dotenv, `config.py` в корне
+
+## Структура проекта
+
+- `backend/` — FastAPI: `main.py`, `routers/` (channels, posts), `static/` (веб-интерфейс)
+- `collector/` — сборщик: `fetcher.py` (Telethon), `run.py` — точка входа `python -m collector.run`
+- `database/` — `models.py`, `session.py`, `__init__.py`; общий доступ у backend и collector
+- `config.py` — переменные окружения (API_ID, API_HASH, DATABASE_URL, TELEGRAM_SESSION_PATH)
+
+## Стиль кода (Python/FastAPI)
+
+- Используй **type hints** для всех сигнатур; Pydantic-модели для запросов/ответов API.
+- **async def** для I/O (БД, Telegram), **def** для чистых функций.
+- Имена файлов и переменных: `snake_case`; директории: `backend/`, `routers/`.
+- Ошибки: ранний return, guard clauses; HTTPException в роутерах с понятным `detail`.
+- Зависимости: FastAPI `Depends(get_session)` для AsyncSession; сессия коммитится в `database.session.get_session` после yield.
+
+## БД и API
+
+- Модели в `database.models`: `Channel`, `Post`; уникальность по `(channel_id, message_id)`.
+- Роутеры не вызывают `session.commit()` вручную — за них это делает dependency.
+- Поиск по постам: `ILIKE` / `LIKE` по полю `text`; при необходимости позже — FTS5/tsvector.
+
+## Telethon (collector)
+
+- Клиент: `TelethonClient(session_path, API_ID, API_HASH)`; сессия в файле (не коммитить).
+- Чтение каналов: каналы берутся из БД; `get_entity` по `telegram_id` или `username`.
+- Сохранение постов: upsert (SQLite `insert ... on conflict do update`) по `channel_id` + `message_id`.
+
+## Важно
+
+- Не коммитить `.env`, файлы сессии Telethon, `*.db`.
+- Документацию для агентов обновлять через скрипт: `python scripts/build_docs.py` (генерирует AGENTS.md и CLOUDE.md).
+
+## Полезные репозитории (правила и скилы)
+
+- [awesome-cursorrules](https://github.com/PatrickJS/awesome-cursorrules) — коллекция .cursorrules, в т.ч. Python/FastAPI.
+- [cursorrules.io](https://cursorrules.io/) — готовые правила по языкам и фреймворкам.
+- [AGENTS.md](https://agents.md/) — открытый формат инструкций для AI-агентов (README для агентов).

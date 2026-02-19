@@ -1,0 +1,11 @@
+.env
+*.db
+telethon_session*
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env.local
+*.log
+.idea/
+.vscode/

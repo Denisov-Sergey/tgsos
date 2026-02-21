@@ -68,7 +68,7 @@ python -m collector.run 500
 docker compose up -d --build
 ```
 
-Веб-интерфейс: http://localhost:8000 (порт можно изменить переменной `PORT` в `.env`).
+Веб-интерфейс: http://localhost:8000. Чтобы использовать другой порт (например 3000), задайте в `.env`: `PORT=3000`, перезапустите контейнеры (`docker compose up -d`).
 
 Данные (БД и сессия Telethon) хранятся в volume `tgsos_data`. В Docker по умолчанию используются пути `/data/tgsos.db` и `/data/telethon_session` — при необходимости задайте в `.env`:
 
@@ -77,18 +77,69 @@ docker compose up -d --build
 
 **Первый вход в Telegram (сессия для сборщика):**
 
-Сессия создаётся при первом запуске сборщика. Запустите контейнер сборщика **интерактивно** (чтобы ввести номер телефона и код из Telegram):
+Сессия создаётся при первом запуске сборщика. Есть два способа:
+
+1. **Через интерфейс приложения (рекомендуется):**
+   - Откройте вкладку **Каналы**.
+   - В блоке **Авторизация Telegram** введите номер телефона и нажмите **«Отправить код»**.
+   - Введите код из Telegram. Если включен 2FA-пароль, введите его на следующем шаге.
+
+2. **Через контейнер collector (интерактивно):**
+   - Запустите контейнер сборщика **интерактивно** (чтобы ввести номер телефона и код):
 
 ```bash
 docker compose run --rm -it collector
 ```
 
-После сохранения сессии в volume дальнейшие запуски можно делать без интерактива (например, по cron):
+**Код для входа приходит только в приложение Telegram** (на телефон или другой уже авторизованный клиент), не по SMS. Откройте Telegram и проверьте уведомление или чат «Telegram» с кодом.
+
+После сохранения сессии в volume дальнейшие запуски можно делать без интерактива.
+
+### Диагностика проблем с авторизацией Telegram
+
+Если код не приходит или вход не завершается:
+
+1. Проверьте статус в UI:
+   - На вкладке **Каналы** строка `Telegram: ...` показывает состояние сессии.
+   - При ошибке отображается причина (`invalid_api_credentials`, `flood_wait`, `password_required`, `invalid_code`, и т.д.).
+
+2. Проверьте `.env`:
+   - `API_ID` и `API_HASH` должны быть реальными значениями с `my.telegram.org`.
+   - Для Docker используйте:
+     - `TELEGRAM_SESSION_PATH=/data/telethon_session`
+     - `DATABASE_URL=sqlite+aiosqlite:////data/tgsos.db`
+
+3. Проверьте логи:
 
 ```bash
-docker compose run --rm collector
-# или с лимитом: docker compose run -e COLLECTOR_LIMIT=500 --rm collector
+docker compose logs -f app
+docker compose logs -f collector
 ```
+
+4. Частые причины:
+   - **Код не приходит**: он приходит только в приложение Telegram (сервисный чат Telegram), не по SMS.
+   - **`flood_wait`**: Telegram временно ограничил попытки; подождите и попробуйте позже.
+   - **`password_required`**: у аккаунта включён 2FA; после кода нужно ввести пароль.
+   - **`invalid_api_credentials`**: неверные `API_ID`/`API_HASH`.
+
+**Способы запуска сборщика:**
+
+1. **Кнопка в интерфейсе** — на вкладке **Каналы** нажмите **«Запустить сбор постов»** (можно задать лимит постов на канал). Сбор пойдёт в фоне, статус отобразится на странице.
+2. **Встроенный планировщик** — в `.env` задайте `SCHEDULER_INTERVAL_MINUTES=30` (или другое число минут). Контейнер app будет автоматически запускать сбор каждые N минут. Кнопка и планировщик рассчитаны на один процесс (не запускайте uvicorn с `--workers 2+`).
+3. **Cron (Linux/macOS)** — добавьте в crontab (`crontab -e`):
+   ```cron
+   */15 * * * * cd /path/to/tgsos && docker compose run --rm collector
+   ```
+   (каждые 15 минут; укажите свой путь к проекту.)
+4. **Task Scheduler (Windows)** — создайте задачу, которая по расписанию выполняет:
+   ```bat
+   cd x:\Git\tgsos && docker compose run --rm collector
+   ```
+5. **Вручную из консоли:**
+   ```bash
+   docker compose run --rm collector
+   # или с лимитом: docker compose run -e COLLECTOR_LIMIT=500 --rm collector
+   ```
 
 Остановка:
 
@@ -120,6 +171,8 @@ docker compose down
 - `GET /api/channels`, `POST /api/channels` (`username`, `title`, `category_id`), `PATCH/DELETE /api/channels/{id}`  
 - `GET /api/posts` — посты с пагинацией и фильтрами: `category_id`, `channel_id`, `from_date`, `to_date`, `search`, `page`, `page_size`  
 - `GET /api/posts/{id}` — один пост  
+- `GET /api/collect/status` — идёт ли сбор  
+- `POST /api/collect/run?limit=200` — запустить сбор в фоне (202 = запущен, 409 = уже идёт)  
 
 Документация: http://localhost:8000/docs
 

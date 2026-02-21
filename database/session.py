@@ -25,10 +25,13 @@ async def init_db() -> None:
         # Миграция: добавить category_id в channels, если ещё нет (для существующих БД)
         def _add_category_id(connection):
             from sqlalchemy import text
+            from sqlalchemy.exc import OperationalError
             try:
                 connection.execute(text("ALTER TABLE channels ADD COLUMN category_id INTEGER"))
-            except Exception:
-                pass  # колонка уже есть
+            except OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+                # колонка уже есть — игнорируем
 
         await conn.run_sync(lambda c: _add_category_id(c))
 

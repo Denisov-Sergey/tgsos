@@ -13,9 +13,9 @@ services:
     restart: unless-stopped
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
-  # Сбор постов: запуск по требованию
-  # docker compose run --rm collector
-  # или по расписанию (cron на хосте): docker compose run --rm collector
+  # Сбор постов. Первая авторизация (код приходит в приложение Telegram, не по SMS):
+  #   docker compose run --rm -it collector
+  # Дальше по требованию: docker compose run --rm collector
   collector:
     build: .
     container_name: tgsos-collector

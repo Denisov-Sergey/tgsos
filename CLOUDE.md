@@ -24,26 +24,39 @@
 
 ## Переменные окружения
 
-- **API_ID**
 - **API_HASH**
-- **TELEGRAM_SESSION_PATH**
+- **API_ID**
+- **COLLECTOR_LIMIT**
 - **DATABASE_URL**
+- **PORT**
+- **SCHEDULER_INTERVAL_MINUTES**
+- **TELEGRAM_SESSION_PATH**
 
 ## Структура
 
-- `backend/` — API и статика (роутеры channels, posts; `static/index.html`).
+- `backend/` — API и статика (роутеры categories, channels, posts, collect; `static/index.html`).
 - `collector/` — сборщик постов: `python -m collector.run [limit]`.
-- `database/` — модели Channel, Post; async сессия и init_db.
+- `database/` — модели Category, Channel, Post; async сессия и init_db.
 - `scripts/` — скрипты (build_docs.py).
 - `docs/` — документация (RELATED_PROJECTS.md).
 - `config.py` — настройки из .env.
 
+## Дедупликация
+
+- **Посты:** уникальность по паре `(channel_id, message_id)`. При повторном сборе запись обновляется (upsert), дубли не создаются.
+- **Каналы:** при добавлении проверка по `username` — повторное добавление возвращает 400.
+- **Категории:** уникальность по `name` в модели.
+
 ## API (кратко)
 
-- `GET/POST/DELETE /api/channels` — каналы.
-- `GET /api/posts` — посты (фильтры: channel_id, from_date, to_date, search, page, page_size).
-- `GET /api/posts/{id}` — один пост.
-- Документация: http://localhost:8000/docs
+- GET/POST/DELETE /api/categories — категории.
+- GET /api/channels, POST /api/channels (username, title, category_id), PATCH/DELETE /api/channels/{id}.
+- GET /api/posts — посты (фильтры: category_id, channel_id, from_date, to_date, search, page, page_size).
+- GET /api/posts/{id} — один пост.
+- GET /api/collect/status — идёт ли сбор.
+- POST /api/collect/run?limit=200 — запустить сбор в фоне (202 = запущен, 409 = уже идёт).
+
+Документация: http://localhost:8000/docs
 
 ---
 *Обновляется скриптом scripts/build_docs.py.*

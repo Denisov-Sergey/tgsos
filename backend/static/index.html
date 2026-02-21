@@ -107,6 +107,20 @@
     .post-meta a { color: var(--accent); text-decoration: none; }
     .post-meta a:hover { text-decoration: underline; }
     .load-more button { min-width: 120px; }
+    .collect-status { font-size: 0.875rem; color: var(--muted); margin-left: 0.5rem; }
+    .collect-status.running { color: var(--accent); }
+    .collect-status.done { color: var(--accent-chart); }
+    .session-status { font-size: 0.875rem; margin: 0.25rem 0 0.5rem; }
+    .session-status.ready { color: var(--accent-chart); }
+    .session-status.not-ready { color: #f87171; }
+    .session-status.checking { color: var(--muted); }
+    #toast {
+      position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
+      background: var(--surface-elevated); border: 1px solid var(--accent-chart);
+      color: var(--text); padding: 0.75rem 1.25rem; border-radius: var(--radius);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; display: none;
+      font-size: 0.9rem; max-width: 90%;
+    }
     .post-text { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 8em; overflow: hidden; }
     .post-text.expanded { max-height: none; }
     .load-more { margin-top: 1rem; text-align: center; }
@@ -115,6 +129,7 @@
   </style>
 </head>
 <body>
+  <div id="toast" role="status" aria-live="polite"></div>
   <div class="container">
     <h1>TGSOS</h1>
     <nav>
@@ -149,7 +164,29 @@
       <div class="panel">
         <h2>Мои каналы</h2>
         <ul class="channel-list" id="channel-list"></ul>
-        <p id="channels-empty" class="empty" style="display: none;">Пока нет каналов. Добавьте канал выше, затем запустите сборщик: <code>python -m collector.run</code></p>
+        <p id="channels-empty" class="empty" style="display: none;">Пока нет каналов. Добавьте канал выше.</p>
+        <p id="session-status" class="session-status checking">Telegram: проверка…</p>
+        <div class="form-row" style="margin-top: 0.5rem;">
+          <input type="text" id="auth-phone" placeholder="+79991234567">
+          <button id="auth-send-code">Отправить код</button>
+          <input type="text" id="auth-code" placeholder="Код из Telegram" style="max-width: 180px;">
+          <button id="auth-verify-code">Подтвердить код</button>
+        </div>
+        <div class="form-row" id="auth-password-row" style="display: none; margin-top: 0.5rem;">
+          <input type="password" id="auth-password" placeholder="Пароль 2FA Telegram">
+          <button id="auth-verify-password">Подтвердить пароль</button>
+        </div>
+        <div class="form-row" style="margin-top: 0.5rem;">
+          <button id="auth-cancel" class="danger">Отменить вход</button>
+        </div>
+        <p id="auth-status" class="collect-status" style="margin: 0.5rem 0 0;"></p>
+        <div class="form-row" style="margin-top: 0.5rem; margin-bottom: 0;">
+          <button id="collect-run">Запустить сбор постов</button>
+          <span style="color: var(--muted); font-size: 0.85rem;">Лимит на канал:</span>
+          <input type="number" id="collect-limit" value="200" min="1" max="5000" style="width: 80px; height: var(--input-h);">
+          <span id="collect-status" class="collect-status"></span>
+        </div>
+        <p id="session-hint" style="color: var(--muted); font-size: 0.8rem; margin: 0.5rem 0 0; display: none;">При первом запуске (Docker) создайте сессию Telegram один раз: <code>docker compose run --rm -it collector</code>. Код для входа придёт в приложение Telegram на телефоне (не по SMS). После авторизации обновите страницу или подождите — статус обновится.</p>
       </div>
     </section>
 
@@ -194,7 +231,14 @@
         document.getElementById('section-channels').style.display = a.dataset.tab === 'channels' ? 'block' : 'none';
         document.getElementById('section-feed').style.display = a.dataset.tab === 'feed' ? 'block' : 'none';
         if (a.dataset.tab === 'feed') { loadChannelsForFilter(); loadCategoriesForFilter(); loadPosts(false); }
-        if (a.dataset.tab === 'channels') { loadCategories(); loadCategorySelect(); }
+        if (a.dataset.tab === 'channels') {
+          loadCategories(); loadCategorySelect();
+          updateSessionStatus();
+          if (sessionPollInterval) clearInterval(sessionPollInterval);
+          sessionPollInterval = setInterval(updateSessionStatus, 8000);
+        } else {
+          if (sessionPollInterval) { clearInterval(sessionPollInterval); sessionPollInterval = null; }
+        }
       });
     });
 
@@ -358,6 +402,242 @@
       loadChannelsForFilter();
     }
 
+    let lastSessionAuthorized = null;
+    let sessionPollInterval = null;
+
+    function authStatus(msg, isError) {
+      const el = document.getElementById('auth-status');
+      el.textContent = msg || '';
+      el.style.color = isError ? 'var(--error, #f87171)' : '';
+    }
+
+    function deliveryHint(deliveryType) {
+      if (!deliveryType) return 'неизвестно';
+      if (deliveryType === 'app') return 'приложение Telegram';
+      if (deliveryType === 'sms') return 'SMS';
+      if (deliveryType === 'call') return 'звонок';
+      if (deliveryType === 'flashcall') return 'flash call';
+      if (deliveryType === 'missedcall') return 'пропущенный звонок';
+      return deliveryType;
+    }
+
+    function sessionHintForStatus(st) {
+      const code = st.session_error_code || '';
+      if (code === 'invalid_api_credentials') {
+        return 'Проверьте API_ID/API_HASH в .env (my.telegram.org), затем пересоберите контейнеры: docker compose up -d --build.';
+      }
+      if (code === 'flood_wait') {
+        return 'Telegram ограничил попытки входа. Подождите и не отправляйте код слишком часто.';
+      }
+      if (code === 'password_required') {
+        return 'Для аккаунта включён пароль 2FA. Введите код, затем пароль в блоке авторизации.';
+      }
+      if (code === 'invalid_code' || code === 'expired_code') {
+        return 'Проверьте чат Telegram с сервисным кодом и запросите новый код при необходимости.';
+      }
+      return st.session_error_hint || 'При первом запуске (Docker) создайте сессию Telegram один раз.';
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.display = 'block';
+      clearTimeout(el._toastTimer);
+      el._toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
+    }
+
+    async function updateAuthFlowStatus() {
+      const passwordRow = document.getElementById('auth-password-row');
+      try {
+        const st = await api('GET', '/auth/telegram/status');
+        if (st.flow_stage === 'password_required') {
+          passwordRow.style.display = 'flex';
+        } else {
+          passwordRow.style.display = 'none';
+        }
+        if (st.authorized === true) {
+          authStatus('Telegram авторизован.', false);
+        } else if (st.last_error) {
+          authStatus(st.last_error + (st.last_error_hint ? ' ' + st.last_error_hint : ''), true);
+        } else if (st.flow_active && st.flow_stage === 'code_required') {
+          let msg = 'Ожидается код.';
+          if (st.delivery_type) {
+            msg += ' Доставка: ' + deliveryHint(st.delivery_type) + '.';
+          }
+          if (st.next_delivery_type) {
+            msg += ' Следующий способ: ' + deliveryHint(st.next_delivery_type) + '.';
+          }
+          if (st.delivery_timeout != null) {
+            msg += ' Таймаут Telegram: ' + st.delivery_timeout + ' сек.';
+          }
+          authStatus(msg, false);
+        }
+      } catch (e) {
+        authStatus('Не удалось получить статус авторизации: ' + (e.message || ''), true);
+      }
+    }
+
+    async function updateSessionStatus() {
+      const statusEl = document.getElementById('session-status');
+      const hintEl = document.getElementById('session-hint');
+      try {
+        const st = await api('GET', '/collect/status');
+        if (st.session_authorized === true) {
+          statusEl.textContent = 'Telegram: готов к сбору';
+          statusEl.className = 'session-status ready';
+          hintEl.style.display = 'none';
+          if (lastSessionAuthorized === false) {
+            showToast('Сессия Telegram авторизована. Можно запускать сбор.');
+          }
+          lastSessionAuthorized = true;
+        } else if (st.session_authorized === false) {
+          statusEl.textContent = 'Telegram: не авторизован. ' + (st.session_error || '');
+          statusEl.className = 'session-status not-ready';
+          hintEl.textContent = sessionHintForStatus(st);
+          hintEl.style.display = 'block';
+          lastSessionAuthorized = false;
+        } else {
+          statusEl.textContent = 'Telegram: проверка…';
+          statusEl.className = 'session-status checking';
+          hintEl.style.display = 'none';
+        }
+      } catch (e) {
+        statusEl.textContent = 'Telegram: не удалось проверить';
+        statusEl.className = 'session-status not-ready';
+        hintEl.style.display = 'block';
+      }
+      await updateAuthFlowStatus();
+    }
+
+    const collectStatusEl = document.getElementById('collect-status');
+    document.getElementById('collect-run').addEventListener('click', async () => {
+      const limit = parseInt(document.getElementById('collect-limit').value, 10) || 200;
+      collectStatusEl.textContent = '';
+      collectStatusEl.className = 'collect-status';
+      try {
+        const r = await fetch(API + '/collect/run?limit=' + limit, { method: 'POST' });
+        const data = await r.json().catch(() => ({}));
+        if (r.status === 202) {
+          collectStatusEl.textContent = 'Сбор запущен…';
+          collectStatusEl.className = 'collect-status running';
+          const check = setInterval(async () => {
+            try {
+              const st = await api('GET', '/collect/status');
+              if (!st.running) {
+                clearInterval(check);
+                if (st.error) {
+                  collectStatusEl.textContent = 'Ошибка: ' + st.error;
+                  collectStatusEl.className = 'collect-status';
+                  collectStatusEl.style.color = 'var(--error, #f87171)';
+                } else {
+                  collectStatusEl.textContent = 'Готово';
+                  collectStatusEl.className = 'collect-status done';
+                  collectStatusEl.style.color = '';
+                }
+                if (document.getElementById('section-feed').style.display !== 'none') {
+                  loadPosts(false);
+                }
+              }
+            } catch (e) { clearInterval(check); }
+          }, 2000);
+        } else if (r.status === 409) {
+          collectStatusEl.textContent = 'Сбор уже идёт';
+          collectStatusEl.className = 'collect-status running';
+        } else {
+          collectStatusEl.textContent = data.message || 'Ошибка';
+        }
+      } catch (e) {
+        collectStatusEl.textContent = 'Ошибка: ' + (e.message || '');
+      }
+    });
+
+    document.getElementById('auth-send-code').addEventListener('click', async () => {
+      const phone = document.getElementById('auth-phone').value.trim();
+      if (!phone) {
+        authStatus('Введите номер телефона в международном формате.', true);
+        return;
+      }
+      authStatus('Отправка кода…', false);
+      try {
+        const data = await api('POST', '/auth/telegram/start', { phone });
+        if (data.authorized) {
+          authStatus('Сессия уже авторизована.', false);
+          updateSessionStatus();
+          return;
+        }
+        let msg = 'Код отправлен.';
+        if (data.delivery_type) {
+          msg += ' Канал доставки: ' + deliveryHint(data.delivery_type) + '.';
+        }
+        if (data.next_delivery_type) {
+          msg += ' Следующий способ: ' + deliveryHint(data.next_delivery_type) + '.';
+        }
+        if (data.delivery_timeout != null) {
+          msg += ' Таймаут Telegram: ' + data.delivery_timeout + ' сек.';
+        }
+        authStatus(msg, false);
+        document.getElementById('auth-password-row').style.display = 'none';
+      } catch (e) {
+        authStatus(e.message || 'Ошибка отправки кода.', true);
+      }
+    });
+
+    document.getElementById('auth-verify-code').addEventListener('click', async () => {
+      const code = document.getElementById('auth-code').value.trim();
+      if (!code) {
+        authStatus('Введите код из Telegram.', true);
+        return;
+      }
+      authStatus('Проверка кода…', false);
+      try {
+        const data = await api('POST', '/auth/telegram/verify', { code });
+        if (data.stage === 'password_required') {
+          document.getElementById('auth-password-row').style.display = 'flex';
+          authStatus(data.message + (data.hint ? ' ' + data.hint : ''), false);
+          return;
+        }
+        authStatus('Успешно авторизовано.', false);
+        document.getElementById('auth-code').value = '';
+        document.getElementById('auth-password').value = '';
+        document.getElementById('auth-password-row').style.display = 'none';
+        updateSessionStatus();
+      } catch (e) {
+        authStatus(e.message || 'Ошибка проверки кода.', true);
+      }
+    });
+
+    document.getElementById('auth-verify-password').addEventListener('click', async () => {
+      const password = document.getElementById('auth-password').value;
+      if (!password) {
+        authStatus('Введите пароль 2FA.', true);
+        return;
+      }
+      authStatus('Проверка пароля…', false);
+      try {
+        await api('POST', '/auth/telegram/password', { password });
+        authStatus('Успешно авторизовано.', false);
+        document.getElementById('auth-code').value = '';
+        document.getElementById('auth-password').value = '';
+        document.getElementById('auth-password-row').style.display = 'none';
+        updateSessionStatus();
+      } catch (e) {
+        authStatus(e.message || 'Ошибка проверки пароля.', true);
+      }
+    });
+
+    document.getElementById('auth-cancel').addEventListener('click', async () => {
+      try {
+        await api('POST', '/auth/telegram/cancel', {});
+        document.getElementById('auth-code').value = '';
+        document.getElementById('auth-password').value = '';
+        document.getElementById('auth-password-row').style.display = 'none';
+        authStatus('Авторизация отменена.', false);
+        updateSessionStatus();
+      } catch (e) {
+        authStatus(e.message || 'Не удалось отменить авторизацию.', true);
+      }
+    });
+
     function buildPostsQuery(resetPage) {
       if (resetPage) currentPage = 1;
       const params = new URLSearchParams();
@@ -424,6 +704,8 @@
     loadCategories();
     loadCategorySelect();
     loadChannels();
+    updateSessionStatus();
+    sessionPollInterval = setInterval(updateSessionStatus, 8000);
   </script>
 </body>
 </html>
